@@ -1,0 +1,46 @@
+# Python bytecode
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Local environment variables and secrets
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+
+# Tests, coverage, and tool caches
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+.tox/
+.nox/
+.mypy_cache/
+.ruff_cache/
+
+# Build and packaging output
+/build/
+/dist/
+*.egg-info/
+.eggs/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+/.vscode/
+
+/red-teaming-language-models-with-language-models/data/
+/red-teaming-language-models-with-language-models/runs/
+/red-teaming-language-models-with-language-models/runs.sqlite3
+/red-teaming-language-models-with-language-models/runs.sqlite3-*
