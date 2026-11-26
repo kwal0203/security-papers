@@ -47,7 +47,8 @@ def evaluate(model, loader, device, use_amp=True):
     p, y = torch.cat(probs).numpy(), torch.cat(labels).numpy()
     pred = (p >= 0.5).astype(int)  # same 0.5 threshold the paper uses
     return {"acc": 100 * accuracy_score(y, pred), "f1": 100 * f1_score(y, pred),
-            "auc": 100 * roc_auc_score(y, p)}
+            "auc": 100 * roc_auc_score(y, p),
+            "pred_pos": 100 * pred.mean(), "label_pos": 100 * y.mean()}
 
 
 def fmt(m):
@@ -111,7 +112,8 @@ def main():
             tok.save_pretrained(args.out)
 
     model = AutoModelForSequenceClassification.from_pretrained(args.out).to(device)
-    print("test:  ", fmt(evaluate(model, eval_dl["test"], device, use_amp)))
+    for s in ("valid", "test"):  # valid again: separates a reload problem from a test-set problem
+        print(f"{s}:  ", fmt(evaluate(model, eval_dl[s], device, use_amp)))
     print("paper: acc 84.5  f1 87.5  auc 92.4  (Gopher 1.4B, Table 8)")
 
 
