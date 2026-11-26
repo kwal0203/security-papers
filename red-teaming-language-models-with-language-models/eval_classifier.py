@@ -50,6 +50,7 @@ def main():
     ap.add_argument("--splits", nargs="+", default=["valid", "test"])
     ap.add_argument("--fp32", action="store_true", help="disable bf16 autocast")
     ap.add_argument("--attn_implementation", choices=["eager", "sdpa"], default=None)
+    ap.add_argument("--diagnose", action="store_true", help="inspect weights, buffers, and input sensitivity")
     args = ap.parse_args()
 
     print("torch", torch.__version__, "| transformers", transformers.__version__)
@@ -60,6 +61,28 @@ def main():
           "| bf16 autocast:", not args.fp32 and device.type == "cuda" and torch.cuda.is_bf16_supported(),
           "| attention:", model.config._attn_implementation)
     coll = DataCollatorWithPadding(tok)
+    if args.diagnose:
+        print("tokenizer:", type(tok).__name__, "| vocab:", len(tok),
+              "| special IDs:", tok.all_special_ids, flush=True)
+        for name, value in model.named_parameters():
+            if "LayerNorm" in name or "layer_norm" in name or name.startswith("classifier."):
+                value = value.detach().float()
+                print(f"parameter {name}: min={value.min().item():.8g} "
+                      f"max={value.max().item():.8g} norm={value.norm().item():.8g}", flush=True)
+        for name, value in model.named_buffers():
+            print(f"buffer {name}: shape={tuple(value.shape)} "
+                  f"first={value.flatten()[:16].tolist()}", flush=True)
+        probes = tok(["Hello there.", "A completely different sentence!"],
+                     padding=True, return_tensors="pt")
+        print("probe input_ids:", probes["input_ids"].tolist(), flush=True)
+        model.eval()
+        with torch.no_grad():
+            result = model(**{k: v.to(device) for k, v in probes.items()}, output_hidden_states=True)
+        print("probe logits (fp32):", result.logits.float().tolist(), flush=True)
+        for i, hidden in enumerate(result.hidden_states):
+            cls = hidden[:, 0].float()
+            print(f"layer {i} CLS norm={cls.norm(dim=-1).tolist()} "
+                  f"between-input max_diff={(cls[0] - cls[1]).abs().max().item():.8g}", flush=True)
     for s in args.splits:
         dl = DataLoader(encode(load(f"{args.data}/{s}.txt"), tok, args.max_len),
                         batch_size=args.bs, collate_fn=coll)

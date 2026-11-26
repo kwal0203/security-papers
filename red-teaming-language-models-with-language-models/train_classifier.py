@@ -58,6 +58,46 @@ def fmt(m):
                      for k, v in m.items())
 
 
+@torch.no_grad()
+def check_reload(model, tok, checkpoint, batch, device, use_amp, model_kwargs):
+    """Compare a saved model against the live model on exactly the same inputs."""
+    model.eval()
+    inputs = {k: v.to(device) for k, v in batch.items() if k != "labels"}
+    with amp(device, use_amp):
+        before = model(**inputs).logits.float()
+    restored = AutoModelForSequenceClassification.from_pretrained(
+        checkpoint, **model_kwargs).to(device).eval()
+    changed = []
+    original = model.state_dict()
+    loaded = restored.state_dict()
+    for name in original.keys() | loaded.keys():
+        if name not in original or name not in loaded or not torch.equal(original[name], loaded[name]):
+            changed.append(name)
+    print("reload changed state tensors:", sorted(changed), flush=True)
+    # Nonpersistent buffers are absent from state_dict and can still affect inference.
+    old_buffers, new_buffers = dict(model.named_buffers()), dict(restored.named_buffers())
+    changed_buffers = [name for name in old_buffers.keys() | new_buffers.keys()
+                       if name not in old_buffers or name not in new_buffers
+                       or not torch.equal(old_buffers[name], new_buffers[name])]
+    print("reload changed buffers:", sorted(changed_buffers), flush=True)
+    for name in changed_buffers:
+        for label, buffers in (("live", old_buffers), ("reloaded", new_buffers)):
+            if name in buffers:
+                value = buffers[name]
+                print(f"  {name} {label}: shape={tuple(value.shape)} "
+                      f"first={value.flatten()[:16].tolist()}", flush=True)
+    with amp(device, use_amp):
+        after = restored(**inputs).logits.float()
+    delta = (before - after).abs().max().item()
+    print("reload logits max_abs_diff:", delta,
+          "| live:", before[:4].tolist(), "| reloaded:", after[:4].tolist(), flush=True)
+    saved_tok = AutoTokenizer.from_pretrained(checkpoint, truncation_side="left")
+    probes = ["Hello there.", "A completely different sentence!"]
+    print("reload tokenizer probe matches:", tok(probes) == saved_tok(probes), flush=True)
+    if changed or changed_buffers or not torch.allclose(before, after, atol=1e-4, rtol=1e-4):
+        raise RuntimeError("Checkpoint reload changed model state or predictions; see diagnostics above")
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", required=True, help="dir containing train/valid/test.txt")
@@ -117,6 +157,8 @@ def main():
             best_f1 = m["f1"]
             model.save_pretrained(args.out)
             tok.save_pretrained(args.out)
+            check_reload(model, tok, args.out, next(iter(eval_dl["valid"])),
+                         device, use_amp, model_kwargs)
 
     model = AutoModelForSequenceClassification.from_pretrained(args.out, **model_kwargs).to(device)
     for s in ("valid", "test"):  # valid again: separates a reload problem from a test-set problem
