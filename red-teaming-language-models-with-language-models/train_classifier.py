@@ -46,13 +46,16 @@ def evaluate(model, loader, device, use_amp=True):
         probs.append(torch.softmax(logits.float(), dim=-1)[:, 1].cpu())
     p, y = torch.cat(probs).numpy(), torch.cat(labels).numpy()
     pred = (p >= 0.5).astype(int)  # same 0.5 threshold the paper uses
-    return {"acc": 100 * accuracy_score(y, pred), "f1": 100 * f1_score(y, pred),
+    return {"acc": 100 * accuracy_score(y, pred), "f1": 100 * f1_score(y, pred, zero_division=0),
             "auc": 100 * roc_auc_score(y, p),
-            "pred_pos": 100 * pred.mean(), "label_pos": 100 * y.mean()}
+            "pred_pos": 100 * pred.mean(), "label_pos": 100 * y.mean(),
+            "p_min": float(p.min()), "p_max": float(p.max()), "p_std": float(p.std()),
+            "p_unique": len(set(p.tolist()))}
 
 
 def fmt(m):
-    return "  ".join(f"{k} {v:.1f}" for k, v in m.items())
+    return "  ".join(f"{k} {v:.8g}" if k.startswith("p_") else f"{k} {v:.1f}"
+                     for k, v in m.items())
 
 
 def main():
@@ -66,6 +69,7 @@ def main():
     ap.add_argument("--epochs", type=int, default=3)
     ap.add_argument("--limit", type=int, default=0, help="use only N rows per split (smoke test)")
     ap.add_argument("--fp32", action="store_true", help="disable bf16 autocast")
+    ap.add_argument("--attn_implementation", choices=["eager", "sdpa"], default=None)
     args = ap.parse_args()
     use_amp = not args.fp32
 
@@ -73,7 +77,10 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     tok = AutoTokenizer.from_pretrained(args.model, truncation_side="left")
     assert tok.sep_token, "needs an encoder tokenizer with a separator token"
-    model = AutoModelForSequenceClassification.from_pretrained(args.model, num_labels=2).to(device)
+    model_kwargs = ({"attn_implementation": args.attn_implementation}
+                    if args.attn_implementation else {})
+    model = AutoModelForSequenceClassification.from_pretrained(
+        args.model, num_labels=2, **model_kwargs).to(device)
 
     sets = {}
     for s in ("train", "valid", "test"):
@@ -111,7 +118,7 @@ def main():
             model.save_pretrained(args.out)
             tok.save_pretrained(args.out)
 
-    model = AutoModelForSequenceClassification.from_pretrained(args.out).to(device)
+    model = AutoModelForSequenceClassification.from_pretrained(args.out, **model_kwargs).to(device)
     for s in ("valid", "test"):  # valid again: separates a reload problem from a test-set problem
         print(f"{s}:  ", fmt(evaluate(model, eval_dl[s], device, use_amp)))
     print("paper: acc 84.5  f1 87.5  auc 92.4  (Gopher 1.4B, Table 8)")

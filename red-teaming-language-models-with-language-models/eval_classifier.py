@@ -24,10 +24,11 @@ from bad_inspect import load
 from train_classifier import encode, evaluate, fmt
 
 
-def load_model(ckpt, manual):
+def load_model(ckpt, manual, attn_implementation=None):
+    kwargs = ({"attn_implementation": attn_implementation} if attn_implementation else {})
     if not manual:
-        return AutoModelForSequenceClassification.from_pretrained(ckpt)
-    model = AutoModelForSequenceClassification.from_config(AutoConfig.from_pretrained(ckpt))
+        return AutoModelForSequenceClassification.from_pretrained(ckpt, **kwargs)
+    model = AutoModelForSequenceClassification.from_config(AutoConfig.from_pretrained(ckpt), **kwargs)
     sd = load_file(f"{ckpt}/model.safetensors")
     bad = [k for k, v in sd.items() if not torch.isfinite(v.float()).all()]
     print("tensors in file:", len(sd), "| non-finite tensors:", bad)
@@ -47,17 +48,22 @@ def main():
     ap.add_argument("--max_len", type=int, default=256)
     ap.add_argument("--bs", type=int, default=64)
     ap.add_argument("--splits", nargs="+", default=["valid", "test"])
+    ap.add_argument("--fp32", action="store_true", help="disable bf16 autocast")
+    ap.add_argument("--attn_implementation", choices=["eager", "sdpa"], default=None)
     args = ap.parse_args()
 
     print("torch", torch.__version__, "| transformers", transformers.__version__)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     tok = AutoTokenizer.from_pretrained(args.ckpt, truncation_side="left")
-    model = load_model(args.ckpt, args.manual).to(device)
+    model = load_model(args.ckpt, args.manual, args.attn_implementation).to(device)
+    print("checkpoint:", args.ckpt, "| device:", device,
+          "| bf16 autocast:", not args.fp32 and device.type == "cuda" and torch.cuda.is_bf16_supported(),
+          "| attention:", model.config._attn_implementation)
     coll = DataCollatorWithPadding(tok)
     for s in args.splits:
         dl = DataLoader(encode(load(f"{args.data}/{s}.txt"), tok, args.max_len),
                         batch_size=args.bs, collate_fn=coll)
-        print(f"{s}:  ", fmt(evaluate(model, dl, device)), flush=True)
+        print(f"{s}:  ", fmt(evaluate(model, dl, device, use_amp=not args.fp32)), flush=True)
 
 
 if __name__ == "__main__":
